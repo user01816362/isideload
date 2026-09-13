@@ -52,9 +52,13 @@ pub enum LoginState {
 #[derive(Serialize, Deserialize, Clone, Debug)]
 #[serde(rename_all = "camelCase")]
 pub struct TrustedNumber {
+    #[serde(default)]
     pub number_with_dial_code: String,
+    #[serde(default)]
     pub last_two_digits: String,
+    #[serde(default)]
     pub push_mode: String,
+    #[serde(default)]
     pub id: u32,
 }
 
@@ -88,7 +92,9 @@ pub struct SMSTwoFactorError {
 #[derive(Debug)]
 enum SmsSendOutcome {
     Sent,
-    ActiveChallenge,
+    ActiveChallenge {
+        actual_number_id: u32,
+    },
     ServiceError(SMSTwoFactorError),
 }
 
@@ -99,18 +105,27 @@ struct SmsChallengeResponse {
     #[serde(rename = "type")]
     challenge_type: String,
     authentication_type: String,
+    #[serde(default)]
     trusted_phone_numbers: Vec<TrustedNumber>,
+    #[serde(default)]
     trusted_phone_number: TrustedNumber,
     security_code: SmsSecurityCode,
+    #[serde(default)]
+    no_trusted_devices: bool,
 }
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct SmsSecurityCode {
+    #[serde(default)]
     length: u8,
+    #[serde(default)]
     too_many_codes_sent: bool,
+    #[serde(default)]
     too_many_codes_validated: bool,
+    #[serde(default)]
     security_code_locked: bool,
+    #[serde(default)]
     security_code_cooldown: bool,
 }
 
@@ -461,7 +476,7 @@ impl AppleAccount {
         Ok(LoginState::NeedsLogin)
     }
 
-    async fn send_sms_2fa(&mut self, id: u32) -> Result<LoginState, Report> {
+    async fn send_sms_2fa(&mut self, mut id: u32) -> Result<LoginState, Report> {
         let anisette_data = self
             .anisette_generator
             .get_anisette_data(self.grandslam_client.clone())
@@ -504,12 +519,16 @@ impl AppleAccount {
                 .context("Failed to read SMS 2FA response text")?
         };
 
-        match Self::classify_sms_send_response(status.as_u16(), &text, id)? {
+        match Self::classify_sms_send_response(status.as_u16(), &text)? {
             SmsSendOutcome::Sent => {
                 info!("SMS 2FA request sent");
             }
-            SmsSendOutcome::ActiveChallenge => {
-                info!("SMS 2FA challenge already active, proceeding to verification");
+            SmsSendOutcome::ActiveChallenge { actual_number_id } => {
+                info!(
+                    "SMS 2FA challenge already active for phone {}, proceeding to verification",
+                    actual_number_id
+                );
+                id = actual_number_id;
             }
             SmsSendOutcome::ServiceError(error) => {
                 if error.code == "-28248" {
@@ -596,7 +615,6 @@ impl AppleAccount {
     fn classify_sms_send_response(
         status: u16,
         text: &str,
-        requested_number_id: u32,
     ) -> Result<SmsSendOutcome, Report> {
         if (200..300).contains(&status) {
             return Ok(SmsSendOutcome::Sent);
@@ -611,18 +629,17 @@ impl AppleAccount {
             && challenge.mode == "sms"
             && challenge.challenge_type == "verification"
             && challenge.authentication_type == "hsa2"
-            && challenge.trusted_phone_number.id == requested_number_id
-            && challenge
+            && !challenge
                 .trusted_phone_numbers
-                .iter()
-                .any(|number| number.id == requested_number_id)
+                .is_empty()
             && challenge.security_code.length == 6
             && !challenge.security_code.too_many_codes_sent
             && !challenge.security_code.too_many_codes_validated
             && !challenge.security_code.security_code_locked
             && !challenge.security_code.security_code_cooldown
         {
-            return Ok(SmsSendOutcome::ActiveChallenge);
+            let actual_number_id = challenge.trusted_phone_number.id;
+            return Ok(SmsSendOutcome::ActiveChallenge { actual_number_id });
         }
 
         bail!(

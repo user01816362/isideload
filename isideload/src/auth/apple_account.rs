@@ -49,8 +49,8 @@ pub enum LoginState {
     NeedsLogin,
 }
 
-#[derive(Serialize, Deserialize, Clone, Debug)]
-#[serde(rename_all = "camelCase")]
+#[derive(Serialize, Deserialize, Clone, Debug, Default)]
+#[serde(rename_all = "camelCase", default)]
 pub struct TrustedNumber {
     #[serde(default)]
     pub number_with_dial_code: String,

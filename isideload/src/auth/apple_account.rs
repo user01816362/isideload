@@ -684,25 +684,41 @@ impl AppleAccount {
             .text()
             .await
             .context("Failed to read SMS 2FA error response text")?;
-        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text)
-            && let Some(numbers) = json.get("trustedPhoneNumbers")
-        {
-            let numbers: Vec<TrustedNumber> = serde_json::from_value(numbers.clone())
-                .context("Failed to parse trusted phone numbers")?;
-            debug!(
-                "Retrieved {} trusted phone numbers (status {}): {:?}",
-                numbers.len(),
-                status,
-                numbers
-            );
-            return Ok(numbers);
+
+        if let Ok(json) = serde_json::from_str::<serde_json::Value>(&text) {
+            // Try trustedPhoneNumbers array first (standard response)
+            if let Some(numbers) = json.get("trustedPhoneNumbers")
+                && let Ok(numbers) = serde_json::from_value::<Vec<TrustedNumber>>(numbers.clone())
+                && !numbers.is_empty()
+            {
+                debug!(
+                    "Retrieved {} trusted phone numbers (status {}): {:?}",
+                    numbers.len(),
+                    status,
+                    numbers
+                );
+                return Ok(numbers);
+            }
+
+            // Fallback: phoneNumber singular (some accounts return this with
+            // noTrustedDevices=true and serviceErrors like -28248)
+            if let Some(phone) = json.get("phoneNumber")
+                && let Ok(number) = serde_json::from_value::<TrustedNumber>(phone.clone())
+            {
+                debug!(
+                    "Retrieved single phone number (status {}): {:?}",
+                    status,
+                    number
+                );
+                return Ok(vec![number]);
+            }
         }
 
         bail!(
             "Failed to retrieve trusted phone numbers (status {}): {}",
             status,
             text
-        );
+        )
     }
 
     fn select_number(&self, selected_number_id: u32) -> Result<LoginState, Report> {
